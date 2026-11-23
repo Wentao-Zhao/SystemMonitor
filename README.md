@@ -2,6 +2,24 @@
 
 独立编写的原生 macOS 菜单栏监控工具。近期目标是替代当前机器上 iStat Menus 的核心用途，当前交付为 0.1.0 开发预览。工程没有 fork、复制或改造开源监控应用。
 
+## 下载与安装
+
+**[下载 SystemMonitor 0.1.0 DMG](https://github.com/Wentao-Zhao/SystemMonitor/releases/download/v0.1.0/SystemMonitor-0.1.0.dmg)** · [版本说明与校验文件](https://github.com/Wentao-Zhao/SystemMonitor/releases/tag/v0.1.0)
+
+当前安装包适用于 **Apple Silicon（M 系列芯片），macOS 14 及以上**。这是开发预览，尚未完成所有系统和机型验收；Intel Mac 暂无安装包。
+
+1. 下载并打开 DMG。
+2. 将 `SystemMonitor.app` 拖入 `Applications`。
+3. 从“应用程序”启动，菜单栏出现点阵后即可使用。
+
+当前使用临时本机签名，尚未经过 Developer ID 公证。若首次启动被 macOS 拦截，请在“系统设置 → 隐私与安全性”查看并处理对应提示。
+
+需要核对下载完整性时，将 DMG 和 Release 中的 `.sha256` 文件放在同一目录，运行：
+
+```sh
+shasum -a 256 -c SystemMonitor-0.1.0.dmg.sha256
+```
+
 ## 当前功能
 
 - 默认合并菜单栏，可切换为各指标独立显示；两种模式分别记住具体读数的选择、顺序、显示类型及满格参考。

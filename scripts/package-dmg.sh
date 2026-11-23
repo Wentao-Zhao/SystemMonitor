@@ -28,5 +28,5 @@ SystemMonitor 0.1.0
 当前优先验证 Apple M1 Pro；CPU 分项功耗在当前系统上不可用，整机和 GPU 功耗可读。
 TEXT
 hdiutil create -volname SystemMonitor -srcfolder "$stage_dir" -ov -format UDZO "$project_dir/dist/SystemMonitor-0.1.0.dmg"
-shasum -a 256 dist/SystemMonitor-0.1.0.dmg > dist/SystemMonitor-0.1.0.dmg.sha256
+(cd "$project_dir/dist" && shasum -a 256 SystemMonitor-0.1.0.dmg) > "$project_dir/dist/SystemMonitor-0.1.0.dmg.sha256"
 printf '%s\n' "$project_dir/dist/SystemMonitor-0.1.0.dmg"
