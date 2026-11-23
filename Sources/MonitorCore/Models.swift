@@ -62,7 +62,7 @@ public struct MetricReading: Identifiable, Sendable {
     public var formatted: String {
         guard let value, value.isFinite else { return "—" }
         switch unit {
-        case "bytes": return ByteCountFormatter.string(fromByteCount: Int64(max(0, min(value, Double(Int64.max) / 2))), countStyle: .binary)
+        case "bytes": return ByteCountFormatter.string(fromByteCount: Int64(max(0, min(value, Double(Int64.max) / 2))), countStyle: id.hasPrefix("disk.") ? .decimal : .binary)
         case "B/s":
             if value < 1024 { return String(format: "%.0f B/s", value) }
             if value < 1048576 { return String(format: "%.1f KB/s", value / 1024) }
@@ -109,6 +109,7 @@ public struct DeviceChoice: Identifiable, Equatable, Sendable {
 public struct MonitorSnapshot: Sendable {
     public var date: Date = Date()
     public var uptime: Double = 0
+    public var bootTime: Date?
     public var readings: [ModuleID: [MetricReading]] = [:]
     public var notes: [ModuleID: String] = [:]
     public var interfaces: [DeviceChoice] = []

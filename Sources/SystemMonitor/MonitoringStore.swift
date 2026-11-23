@@ -9,6 +9,7 @@ final class MonitoringStore: ObservableObject {
     @Published private(set) var snapshot = MonitorSnapshot()
     @Published private(set) var preferences: MonitorPreferences
     @Published private(set) var history = MetricHistory()
+    @Published private(set) var publicIPLocation: PublicIPLocation?
     @Published private(set) var paused = false
     @Published private(set) var sleeping = false
     @Published private(set) var lastUpdated: Date?
@@ -17,12 +18,15 @@ final class MonitoringStore: ObservableObject {
     private var generation = 0
     private var inFlight = false
     private let defaults: UserDefaults
+    private let resolvePublicIP: Bool
+    private lazy var publicIPService = PublicIPLocationService { [weak self] in self?.publicIPLocation = $0 }
     private let collector = CollectorSession()
     private var readingCache = ReadingCache()
     private var observers: [NSObjectProtocol] = []
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, resolvePublicIP: Bool = true) {
         self.defaults = defaults
+        self.resolvePublicIP = resolvePublicIP
         var saved = defaults.data(forKey: "monitor.preferences.v1").flatMap { try? JSONDecoder().decode(MonitorPreferences.self, from: $0) } ?? MonitorPreferences()
         saved.normalize(); preferences = saved
         let center = NSWorkspace.shared.notificationCenter
@@ -49,12 +53,24 @@ final class MonitoringStore: ObservableObject {
             generation += 1
             queue.async { [collector] in collector.reset() }
         }
+        if resolvePublicIP, old.publicIPProvider != value.publicIPProvider {
+            publicIPService.refresh(interface: snapshot.selectedInterface, provider: value.publicIPProvider, force: true)
+            publicIPService.suspend(value.publicIPProvider == nil || paused || sleeping)
+            if value.publicIPProvider == nil { publicIPLocation = nil }
+        }
         if old.refreshInterval != value.refreshInterval { restartTimer() }
         else if selectionChanged { sample() }
     }
 
+    var publicIPLookupEnabled: Bool { resolvePublicIP && preferences.publicIPProvider != nil }
+
+    func refreshPublicIP() {
+        if publicIPLookupEnabled { publicIPService.refresh(interface: snapshot.selectedInterface, provider: preferences.publicIPProvider, force: true) }
+    }
+
     func togglePaused() {
         paused.toggle(); generation += 1
+        if publicIPLookupEnabled { publicIPService.suspend(paused || sleeping) }
         history.append(time: SampleClock.now, values: [:])
         queue.async { [collector] in collector.reset() }
         restartTimer()
@@ -62,12 +78,14 @@ final class MonitoringStore: ObservableObject {
 
     private func willSleep() {
         sleeping = true; generation += 1
+        if publicIPLookupEnabled { publicIPService.suspend(true) }
         history.append(time: SampleClock.now, values: [:])
         timer?.invalidate(); timer = nil
     }
 
     private func didWake() {
         sleeping = false; generation += 1
+        if publicIPLookupEnabled { publicIPService.suspend(paused) }
         history.append(time: SampleClock.now, values: [:])
         queue.async { [collector] in collector.reset() }
         restartTimer()
@@ -97,6 +115,7 @@ final class MonitoringStore: ObservableObject {
                 if self.snapshot.selectedInterface != result.selectedInterface { self.history.removeSeries(prefix: "network."); self.readingCache.remove(prefix: "network.") }
                 if self.snapshot.selectedDisk != result.selectedDisk { self.history.removeSeries(prefix: "disk."); self.readingCache.remove(prefix: "disk.") }
                 self.snapshot = self.readingCache.annotate(result)
+                if self.publicIPLookupEnabled { self.publicIPService.refresh(interface: result.selectedInterface, provider: self.preferences.publicIPProvider) }
                 self.history.append(time: result.uptime, values: result.values)
                 self.lastUpdated = result.date
             }

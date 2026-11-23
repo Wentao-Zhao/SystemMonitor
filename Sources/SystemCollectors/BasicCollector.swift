@@ -14,7 +14,13 @@ public final class BasicCollector {
     private var cachedVolumes: [Volume] = []
     private var lastVolumeUpdate: Double = -.infinity
     private let host = mach_host_self()
-    private struct Volume { var id: String; var name: String; var total: Double; var available: Double; var bsd: String }
+    private let bootTime: Date? = {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 else { return nil }
+        return Date(timeIntervalSince1970: Double(boot.tv_sec) + Double(boot.tv_usec) / 1_000_000)
+    }()
+    private struct Volume { var id: String; var name: String; var capacity: DiskCapacity; var bsd: String }
 
     public init() { loadCPUTopology() }
     deinit { mach_port_deallocate(mach_task_self_, host) }
@@ -27,6 +33,7 @@ public final class BasicCollector {
     public func sample(interfaceID: String = "", diskID: String = "") -> MonitorSnapshot {
         var snapshot = MonitorSnapshot()
         snapshot.uptime = SampleClock.now
+        snapshot.bootTime = bootTime
         snapshot.readings[.cpu] = cpu()
         snapshot.readings[.memory] = memory()
         network(into: &snapshot, preferred: interfaceID)
@@ -180,12 +187,18 @@ public final class BasicCollector {
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeIsLocalKey, .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey], options: [.skipHiddenVolumes]) ?? [URL(fileURLWithPath: "/")]
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: [.volumeIsLocalKey, .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]), values.volumeIsLocal == true,
-                  let total = values.volumeTotalCapacity, total > 0, let available = values.volumeAvailableCapacity else { return nil }
+                  let total = values.volumeTotalCapacity, total > 0 else { return nil }
+            // This estimate includes space macOS can reclaim. Query separately so an
+            // unsupported estimate does not discard an otherwise readable volume.
+            let important = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            guard let capacity = DiskCapacity(totalBytes: Double(total),
+                                              freeBytes: values.volumeAvailableCapacity.map(Double.init),
+                                              availableForImportantUsage: important?.volumeAvailableCapacityForImportantUsage.map(Double.init)) else { return nil }
             var fs = statfs()
             guard statfs(url.path, &fs) == 0 else { return nil }
             let device = withUnsafePointer(to: &fs.f_mntfromname) { $0.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) { String(cString: $0) } }
             guard device.hasPrefix("/dev/disk") else { return nil }
-            return Volume(id: url.path, name: values.volumeName ?? url.lastPathComponent, total: Double(total), available: Double(available), bsd: String(device.dropFirst(5)))
+            return Volume(id: url.path, name: values.volumeName ?? url.lastPathComponent, capacity: capacity, bsd: String(device.dropFirst(5)))
         }.sorted { $0.id == "/" || ($1.id != "/" && $0.name < $1.name) }
     }
 
@@ -198,7 +211,7 @@ public final class BasicCollector {
         snapshot.selectedDisk = selected
         guard let volume = cachedVolumes.first(where: { $0.id == selected }), FileManager.default.fileExists(atPath: volume.id) else {
             diskRates.removeAll()
-            snapshot.readings[.disk] = [MetricReading("disk.available", "剩余空间", nil, "bytes")]
+            snapshot.readings[.disk] = [MetricReading("disk.available", "可用空间", nil, "bytes")]
             snapshot.notes[.disk] = "所选本地卷不可用"
             return
         }
@@ -208,10 +221,17 @@ public final class BasicCollector {
             read = diskRates["\(selected).\(device.id).read", default: CounterRate()].sample(total: device.read, time: snapshot.uptime)
             write = diskRates["\(selected).\(device.id).write", default: CounterRate()].sample(total: device.write, time: snapshot.uptime)
         }
+        let capacity = volume.capacity
+        let availabilityNote: String
+        if capacity.freeBytes == nil { availabilityNote = "系统可用空间估计；当前空闲空间未知" }
+        else if capacity.includesReclaimableSpace { availabilityNote = "包含 macOS 预计可回收的空间" }
+        else { availabilityNote = "当前空闲空间；未获得更高的系统可用空间估计" }
         snapshot.readings[.disk] = [
-            MetricReading("disk.available", "剩余空间", volume.available, "bytes"),
-            MetricReading("disk.total", "卷容量", volume.total, "bytes"),
-            MetricReading("disk.percent", "已用空间", (volume.total - volume.available) / volume.total * 100, "%"),
+            MetricReading("disk.available", "可用空间", capacity.availableBytes, "bytes", note: availabilityNote),
+            MetricReading("disk.total", "卷容量", capacity.totalBytes, "bytes"),
+            MetricReading("disk.used", "已用空间", capacity.usedBytes, "bytes", note: "总容量减可用空间"),
+            MetricReading("disk.percent", "空间占用", capacity.usedPercent, "%"),
+            MetricReading("disk.free", "当前空闲空间", capacity.freeBytes, "bytes", note: "不含系统预计可回收的空间"),
             MetricReading("disk.read", "设备读取", read, "B/s", note: "对应物理设备 I/O"),
             MetricReading("disk.write", "设备写入", write, "B/s", note: "对应物理设备 I/O")
         ]

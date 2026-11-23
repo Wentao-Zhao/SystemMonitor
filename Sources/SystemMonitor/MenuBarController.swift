@@ -6,7 +6,9 @@ import MonitorCore
 @MainActor
 final class MenuBarController: NSObject {
     private let store: MonitoringStore
-    private var items: [(item: NSStatusItem, module: ModuleID?)] = []
+    private var items: [(item: NSStatusItem, metricID: String?)] = []
+    private var appearanceObservers: [NSKeyValueObservation] = []
+    private var signals: [String: MetricSignal] = [:]
     private let popover = NSPopover()
     private var settings: NSWindowController?
     private var overview: NSWindowController?
@@ -36,91 +38,75 @@ final class MenuBarController: NSObject {
 
     private func render() {
         let preferences = store.preferences
-        let layout = preferences.mode.rawValue + preferences.visibleModules.map(\.rawValue).joined(separator: ",")
+        let selections = preferences.menuMetrics
+        let layout = preferences.mode.rawValue + selections.map(\.id).joined(separator: ",")
         if layout != lastLayout {
             popover.close()
+            appearanceObservers.removeAll()
             for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
             items = []
-            let modules: [ModuleID?] = preferences.mode == .combined ? [nil] : preferences.visibleModules.map(Optional.some)
-            for module in modules {
+            let ids: [String?] = preferences.mode == .combined || selections.isEmpty ? [nil] : selections.map { Optional($0.id) }
+            // Status items are inserted from right to left. Reverse creation keeps the
+            // settings order left to right; per-item autosaving would override it.
+            for id in ids.reversed() {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.autosaveName = "SystemMonitor.\(module?.rawValue ?? "combined")"
+                if id == nil { item.autosaveName = "SystemMonitor.combined" }
                 item.button?.target = self
                 item.button?.action = #selector(clicked(_:))
                 item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-                items.append((item, module))
+                if let button = item.button {
+                    appearanceObservers.append(button.observe(\.effectiveAppearance) { [weak self] _, _ in
+                        DispatchQueue.main.async { self?.render() }
+                    })
+                }
+                items.append((item, id))
             }
             lastLayout = layout
         }
+        let frames = MenuBarRenderer.frames(for: selections, snapshot: store.snapshot, history: store.history,
+                                            now: store.snapshot.uptime, refreshInterval: preferences.refreshInterval, previous: signals)
+        signals = Dictionary(uniqueKeysWithValues: frames.map { ($0.id, $0.signal) })
         for entry in items {
             guard let button = entry.item.button else { continue }
-            if store.paused {
-                button.image = nil; button.title = entry.module.map { "\($0.shortTitle) ⏸" } ?? "监控 ⏸"
-                button.toolTip = "SystemMonitor · 采集已暂停"
-            } else {
-                button.title = ""
-                let modules = entry.module.map { [$0] } ?? preferences.visibleModules
-                button.image = summaryImage(modules)
-                button.imagePosition = .imageOnly
-                button.toolTip = modules.map { "\($0.title)：\(store.snapshot.reading($0.primaryID(preferences))?.formatted ?? "等待采样")" }.joined(separator: "\n")
-                button.setAccessibilityLabel(button.toolTip)
-            }
+            let selected = entry.metricID.map { id in selections.filter { $0.id == id } } ?? selections
+            let displayedFrames = entry.metricID.map { id in frames.filter { $0.id == id } } ?? frames
+            let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            button.title = ""
+            button.image = MenuBarRenderer.image(frames: displayedFrames, dark: dark, paused: store.paused)
+            button.imagePosition = .imageOnly
+            button.toolTip = nil
+            button.setAccessibilityLabel(statusAccessibilityLabel(for: selected, frames: displayedFrames))
         }
     }
 
-    private func summaryImage(_ modules: [ModuleID]) -> NSImage {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
-        let segments: [(String, ModuleID, Bool)] = modules.map { module in
-            let reading = store.snapshot.reading(module.primaryID(store.preferences))
-            let value = reading?.formatted ?? "—"
-            let text: String
-            switch module {
-            case .cpu: text = "CPU \(value)"
-            case .gpu: text = "GPU \(value)"
-            case .memory: text = "MEM \(value)"
-            case .disk: text = store.preferences.diskAsCapacity ? "SSD \(value)" : "R \(value) W \(store.snapshot.reading("disk.write")?.formatted ?? "—")"
-            case .network: text = "↓\(value) ↑\(store.snapshot.reading("network.out")?.formatted ?? "—")"
-            case .sensors: text = value
-            case .power: text = value
-            }
-            return (text, module, store.preferences.styles[module.rawValue] == .graph)
-        }
-        let widths = segments.map { $0.2 ? CGFloat(58) : ceil(($0.0 as NSString).size(withAttributes: attributes).width) }
-        let total = widths.reduce(0, +) + CGFloat(max(0, segments.count - 1)) * 12 + 4
-        let image = NSImage(size: NSSize(width: total, height: 22), flipped: false) { rect in
-            var x: CGFloat = 2
-            for (index, segment) in segments.enumerated() {
-                if segment.2 {
-                    let points = self.store.history.points(for: segment.1.primaryID(self.store.preferences), since: self.store.snapshot.uptime - 60)
-                    self.drawGraph(points, in: NSRect(x: x, y: 4, width: widths[index], height: 14), now: self.store.snapshot.uptime)
-                } else {
-                    let size = (segment.0 as NSString).size(withAttributes: attributes)
-                    (segment.0 as NSString).draw(at: NSPoint(x: x, y: (rect.height - size.height) / 2), withAttributes: attributes)
+    private func statusAccessibilityLabel(for selections: [MenuMetricSelection], frames: [DotMatrixFrame]) -> String {
+        var lines = [store.paused ? "SystemMonitor · 采集已暂停" : "SystemMonitor"]
+        if selections.isEmpty { lines.append("未选择菜单栏指标 · 右键打开设置以添加") }
+        for selection in selections {
+            let metric = selection.metric
+            let reading = store.snapshot.reading(metric.id)
+            var line = "\(metric.title)：\(reading?.formatted ?? "—") · \(selection.presentation.title)"
+            if reading?.value == nil { line += " · 当前不可用" }
+            if let state = frames.first(where: { $0.id == selection.id })?.signal {
+                let name: String
+                switch state {
+                case .normal: name = "正常"
+                case .elevated: name = "偏高"
+                case .critical: name = "紧张"
+                case .unknown: name = "状态未知"
                 }
-                x += widths[index] + 12
+                line += " · \(name)"
             }
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
-
-    private func drawGraph(_ points: [HistoryPoint], in rect: NSRect, now: Double) {
-        let maxValue = max(points.compactMap(\.value).max() ?? 1, 1)
-        NSColor.labelColor.setStroke()
-        let path = NSBezierPath(); path.lineWidth = 1.25
-        for segment in chartSegments(points) {
-            for (index, point) in segment.enumerated() {
-                guard let value = point.value else { continue }
-                let p = NSPoint(x: rect.minX + rect.width * min(1, max(0, (point.time - now + 60) / 60)), y: rect.minY + rect.height * min(1, max(0, value / maxValue)))
-                if index > 0 { path.line(to: p) } else { path.move(to: p) }
+            if metric.module == .memory, let pressure = store.snapshot.reading("memory.pressure"), pressure.value != nil {
+                line += " · 内存压力\(pressure.formatted)"
             }
+            if metric.hasAdjustableScale, let scale = metric.fullScale(in: store.snapshot, override: selection.scale) {
+                line += " · 满格 \(MetricReading("reference", "", scale, metric.unit).formatted)"
+            }
+            if metric.module == .memory, store.snapshot.reading("memory.pressure")?.value == nil { line += " · 压力未知" }
+            lines.append(line)
         }
-        path.stroke()
-        if points.compactMap(\.value).isEmpty {
-            let dash = NSBezierPath(); dash.move(to: NSPoint(x: rect.midX - 4, y: rect.midY)); dash.line(to: NSPoint(x: rect.midX + 4, y: rect.midY)); dash.stroke()
-        }
+        return lines.joined(separator: "\n")
     }
 
     @objc private func clicked(_ sender: NSStatusBarButton) {
@@ -131,12 +117,33 @@ final class MenuBarController: NSObject {
             for (title, action) in [("设置…", #selector(showSettings)), (store.paused ? "继续采集" : "暂停采集", #selector(togglePause)), ("退出 SystemMonitor", #selector(quit))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
             }
+            let metrics = NSMenuItem(title: "菜单栏指标", action: nil, keyEquivalent: "")
+            let choices = NSMenu()
+            let catalog = MenuMetricCatalog.metrics(in: store.snapshot)
+            for module in ModuleID.allCases {
+                let group = NSMenuItem(title: module.title, action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                var available = catalog.filter { $0.module == module }
+                available += store.preferences.menuMetrics.map(\.metric).filter { saved in
+                    saved.module == module && !available.contains { $0.id == saved.id }
+                }
+                for metric in available {
+                    let option = NSMenuItem(title: metric.title, action: #selector(toggleMetric(_:)), keyEquivalent: "")
+                    option.target = self; option.representedObject = metric
+                    option.state = store.preferences.menuMetrics.contains { $0.id == metric.id } ? .on : .off
+                    submenu.addItem(option)
+                }
+                group.submenu = submenu; choices.addItem(group)
+            }
+            metrics.submenu = choices; menu.insertItem(metrics, at: 1)
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: sender)
             return
         }
         if popover.isShown { popover.close(); return }
-        popover.contentViewController = NSHostingController(rootView: MonitorPanel(store: store, module: entry.module) { [weak self] in self?.showSettings() })
-        popover.contentSize = NSSize(width: 580, height: 660)
+        popover.contentViewController = NSHostingController(rootView: MonitorPanel(store: store,
+            module: entry.metricID.flatMap { id in store.preferences.menuMetrics.first { $0.id == id }?.metric.module },
+            openWindow: { [weak self] in self?.showOverview() }) { [weak self] in self?.showSettings() })
+        popover.contentSize = NSSize(width: MonitorPanel.width, height: MonitorPanel.height)
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
     }
@@ -164,11 +171,20 @@ final class MenuBarController: NSObject {
             window.title = "SystemMonitor 系统概览"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 580, height: 660)); window.center()
+            window.setContentSize(NSSize(width: MonitorPanel.width, height: MonitorPanel.height)); window.center()
             overview = NSWindowController(window: window)
         }
         NSApp.activate(ignoringOtherApps: true)
         overview?.showWindow(nil); overview?.window?.makeKeyAndOrderFront(nil)
+    }
+    @objc private func toggleMetric(_ sender: NSMenuItem) {
+        guard let metric = sender.representedObject as? MenuMetric else { return }
+        store.updatePreferences { preferences in
+            var selections = preferences.menuMetrics
+            if selections.contains(where: { $0.id == metric.id }) { selections.removeAll { $0.id == metric.id } }
+            else { selections.append(MenuMetricSelection(metric: metric)) }
+            preferences.menuMetrics = selections
+        }
     }
     @objc private func togglePause() { store.togglePaused() }
     @objc private func quit() { NSApp.terminate(nil) }
