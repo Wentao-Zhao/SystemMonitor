@@ -66,76 +66,52 @@ struct SegmentedMeter: View {
     }
 }
 
-struct Sparkline: View {
+/// The same rounded-square dots as the menu bar, with a fixed time axis.
+struct HistoryDotChart: View {
     let points: [HistoryPoint]
     let now: Double
     let window: Double
     let color: Color
     var ceiling: Double?
     var compact = false
-    var bars = false
 
     var body: some View {
         GeometryReader { geometry in
-            let maximum = max(ceiling ?? ((points.compactMap { $0.value == nil ? nil : ($0.maximum ?? $0.value) }.max() ?? 1) * 1.12), 0.001)
-            let segments = plotSegments(points)
-            ZStack {
-                if !compact {
-                    Path { path in
-                        for fraction in [0.0, 0.5, 1.0] {
-                            let y = geometry.size.height * fraction
-                            path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: geometry.size.width, y: y))
+            let rows = compact ? 8 : 16
+            let count = min(100, max(2, Int(geometry.size.width / (compact ? 5.0 : 5.8))))
+            let maximum = max(ceiling ?? ((points.compactMap { point in
+                point.value == nil ? nil : (point.maximum ?? point.value)
+            }.max() ?? 1) * 1.12), 0.001)
+            let columns = HistoryDotSeries.columns(points: points, now: now, window: window, fullScale: maximum, count: count)
+            Canvas { context, size in
+                let pitchX = size.width / CGFloat(count), pitchY = size.height / CGFloat(rows)
+                let side = min(compact ? 2.8 : 3.6, pitchX - 1.3, pitchY - 1.3)
+                guard side > 0 else { return }
+                for column in columns.indices {
+                    guard let reading = columns[column] else { continue }
+                    for row in 0..<rows {
+                        let x = CGFloat(column) * pitchX + (pitchX - side) / 2
+                        let y = size.height - CGFloat(row + 1) * pitchY + (pitchY - side) / 2
+                        let rect = CGRect(x: x, y: y, width: side, height: side)
+                        let shape = Path(roundedRect: rect, cornerRadius: side * 0.2)
+                        context.fill(shape, with: .color(.primary.opacity(compact ? 0.035 : 0.045)))
+                        let fraction = min(1, max(0, reading.fraction * Double(rows) - Double(row)))
+                        if fraction > 0 {
+                            var fill = context
+                            fill.clip(to: shape)
+                            fill.fill(Path(CGRect(x: x, y: y + side * (1 - fraction), width: side, height: side * fraction)), with: .color(color))
                         }
-                    }.stroke(Color.primary.opacity(0.065), style: StrokeStyle(lineWidth: 0.5, dash: [2, 4]))
-                }
-                Path { path in
-                    for point in segments.flatMap({ $0 }) {
-                        guard point.value != nil, let low = point.minimum, let high = point.maximum, high > low else { continue }
-                        path.move(to: position(point, low, in: geometry.size, maximum: maximum))
-                        path.addLine(to: position(point, high, in: geometry.size, maximum: maximum))
+                        let peakRow = min(rows - 1, max(0, Int(ceil(reading.peak * Double(rows))) - 1))
+                        if row == peakRow && reading.peak - reading.fraction >= 1 / Double(rows) {
+                            context.fill(shape, with: .color(color.opacity(0.32)))
+                        }
                     }
-                }.stroke(color.opacity(0.22), lineWidth: 1)
-                if bars {
-                    Path { path in
-                        for point in segments.flatMap({ $0 }) {
-                            guard let value = point.value, value.isFinite else { continue }
-                            let p = position(point, value, in: geometry.size, maximum: maximum)
-                            path.move(to: CGPoint(x: p.x, y: geometry.size.height)); path.addLine(to: p)
-                        }
-                    }.stroke(color.opacity(0.8), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                } else {
-                    Path { path in
-                        for segment in segments {
-                            guard let first = segment.first, let value = first.value else { continue }
-                            let start = position(first, value, in: geometry.size, maximum: maximum)
-                            path.move(to: CGPoint(x: start.x, y: geometry.size.height)); path.addLine(to: start)
-                            for point in segment.dropFirst() {
-                                if let value = point.value { path.addLine(to: position(point, value, in: geometry.size, maximum: maximum)) }
-                            }
-                            if let last = segment.last, let value = last.value {
-                                path.addLine(to: CGPoint(x: position(last, value, in: geometry.size, maximum: maximum).x, y: geometry.size.height))
-                            }
-                            path.closeSubpath()
-                        }
-                    }.fill(color.opacity(0.09))
-                    Path { path in
-                        for segment in segments {
-                            for (index, point) in segment.enumerated() {
-                                guard let value = point.value else { continue }
-                                let p = position(point, value, in: geometry.size, maximum: maximum)
-                                if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
-                            }
-                        }
-                    }.stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                }
-                if points.compactMap(\.value).isEmpty {
-                    Text("等待采样").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
             }
-        }.accessibilityLabel("近期趋势，缺失采样保留空白")
-    }
-    private func position(_ point: HistoryPoint, _ value: Double, in size: CGSize, maximum: Double) -> CGPoint {
-        CGPoint(x: size.width * min(1, max(0, (point.time - now + window) / window)),
-                y: size.height * (1 - min(1, max(0, value / maximum))))
+            if columns.allSatisfy({ $0 == nil }) {
+                Text("等待采样").font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }.accessibilityLabel("历史点阵，填充为平均值，淡点为峰值，缺失采样保留空白")
     }
 }

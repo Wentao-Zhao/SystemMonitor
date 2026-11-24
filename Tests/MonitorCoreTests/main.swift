@@ -209,5 +209,21 @@ expect(PublicIPLocation(ipipText: "当前 IP：203.0.113.2  来自于：中国 �
 expect(PublicIPLocation(ipipText: "当前 IP：203.0.113.3  来自于：日本 东京")?.flag == "🇯🇵", "IPIP country parsing also supports foreign exits")
 expect(PublicIPLocation(ipipText: "查询失败") == nil, "a domestic lookup failure does not produce an incorrect flag")
 
+// Panel dot histories use time bins, not the number of samples.
+let dotPanelPoints = [HistoryPoint(time: 0, value: 20), HistoryPoint(time: 4, value: 80), HistoryPoint(time: 8, value: nil), HistoryPoint(time: 12, value: 40)]
+let dotPanel = HistoryDotSeries.columns(points: dotPanelPoints, now: 16, window: 16, fullScale: 100, count: 4)
+expect(dotPanel.map { $0?.fraction } == [0.2, 0.8, nil, 0.4], "panel dots keep fixed percent scale and missing samples unlit")
+let dotWeighted = HistoryDotSeries.columns(points: [HistoryPoint(time: 0, value: 0), HistoryPoint(time: 1, value: 100)], now: 4, window: 4, fullScale: 100, count: 1)
+expect(dotWeighted[0]?.fraction == 0.75, "panel dots average by elapsed time rather than sample count")
+let dotRange = HistoryDotSeries.columns(points: [HistoryPoint(time: 0, value: 20, minimum: 10, maximum: 90)], now: 4, window: 4, fullScale: 100, count: 1)
+expect(dotRange[0]?.fraction == 0.2 && dotRange[0]?.peak == 0.9, "panel dots preserve archived peaks alongside the average fill")
+let dotGap = HistoryDotSeries.columns(points: [HistoryPoint(time: 0, value: 20), HistoryPoint(time: 1, value: nil), HistoryPoint(time: 3, value: 40)], now: 4, window: 4, fullScale: 100, count: 1)
+expect(dotGap[0] == nil, "a panel column containing a missing interval does not bridge that gap")
+let dotLongGap = HistoryDotSeries.columns(points: [HistoryPoint(time: 0, value: 20), HistoryPoint(time: 30, value: 40)], now: 40, window: 40, fullScale: 100, count: 4)
+expect(dotLongGap[1] == nil && dotLongGap[2] == nil, "long sampling gaps remain unlit in dot histories")
+let dotOverflow = HistoryDotSeries.columns(points: [HistoryPoint(time: 0, value: 180)], now: 4, window: 4, fullScale: 100, count: 1)
+expect(dotOverflow[0]?.fraction == 1 && dotOverflow[0]?.peak == 1, "panel dots clamp to the fixed scale rather than changing the axis")
+expect(HistoryDotSeries.columns(points: [], now: 4, window: 4, fullScale: 0, count: 4).allSatisfy { $0 == nil }, "invalid or absent dot data cannot be painted as healthy zero")
+
 print("\(checks) checks, \(failures) failures")
 if failures > 0 { exit(1) }

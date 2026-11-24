@@ -62,7 +62,7 @@ struct MonitorSettingsView: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 }
-                Text("SystemMonitor 0.1.0 · 原生 macOS 系统监控")
+                Text("SystemMonitor 0.1.1 · 原生 macOS 系统监控")
                     .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
             }.padding(24)
         }.frame(width: 620, height: 690)

@@ -123,10 +123,11 @@ struct MonitorPanel: View {
             }
             networkSummary
             diskSummary
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 smallSummary(.gpu, id: "gpu.total", caption: "设备负载")
                 smallSummary(.sensors, id: "cpu.temperature", caption: "CPU 热区")
                 smallSummary(.power, id: "system.power", caption: "整机功耗")
+                fanSummary
             }
             if store.paused {
                 Text("采集已暂停，保留最后一次数据").font(.system(size: 10)).foregroundStyle(.orange)
@@ -139,7 +140,7 @@ struct MonitorPanel: View {
             VStack(alignment: .leading, spacing: 9) {
                 summaryTitle("CPU 负载")
                 Text(value("cpu.total")).font(.system(size: 29, weight: .medium)).monospacedDigit()
-                Sparkline(points: store.history.points(for: "cpu.total", since: now - 3600), now: now, window: 3600,
+                HistoryDotChart(points: store.history.points(for: "cpu.total", since: now - 3612), now: now, window: 3600,
                           color: MonitorTheme.accent, ceiling: 100, compact: true).frame(height: 38)
                 HStack {
                     Text("最近 1 小时")
@@ -215,11 +216,43 @@ struct MonitorPanel: View {
         Button { selection = module } label: {
             VStack(alignment: .leading, spacing: 7) {
                 Text(module == .sensors ? "温度" : module.shortTitle).font(.system(size: 10)).foregroundStyle(.secondary)
-                Text(value(id)).font(.system(size: 16, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
+                Text(value(id)).font(.system(size: 15, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 Text(caption).font(.system(size: 9)).foregroundStyle(.tertiary)
-            }.frame(maxWidth: .infinity, alignment: .leading).panelSurface(padding: 12)
+            }.frame(maxWidth: .infinity, minHeight: 66, maxHeight: 66, alignment: .topLeading).panelSurface(padding: 11)
         }.buttonStyle(.plain).accessibilityLabel("\(caption) \(value(id))，查看\(module.title)详情")
     }
+    private var fanReadings: [MetricReading] {
+        (store.snapshot.readings[.sensors] ?? []).filter { $0.unit == "RPM" }
+            .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+    }
+
+    private var fanSummary: some View {
+        let fans = fanReadings
+        return Button { selection = .sensors } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("风扇转速").font(.system(size: 10)).foregroundStyle(.secondary)
+                if fans.isEmpty {
+                    Text("—").font(.system(size: 15, weight: .medium))
+                    Text("无可用读数").font(.system(size: 9)).foregroundStyle(.tertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(fans.prefix(2).enumerated()), id: \.element.id) { index, reading in
+                            HStack(spacing: 5) {
+                                Text("\(index + 1)").font(.system(size: 8)).foregroundStyle(.tertiary)
+                                Text(reading.formatted.replacingOccurrences(of: " RPM", with: ""))
+                                    .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                                    .foregroundStyle(reading.value == nil ? Color.secondary : Color.primary)
+                            }
+                        }
+                    }
+                    Text(fans.count > 2 ? "RPM · 共 \(fans.count) 个" : "RPM")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }.frame(maxWidth: .infinity, minHeight: 66, maxHeight: 66, alignment: .topLeading).panelSurface(padding: 11)
+        }.buttonStyle(.plain)
+            .accessibilityLabel("风扇转速，" + (fans.isEmpty ? "无可用读数" : fans.map { "\($0.title) \($0.formatted)" }.joined(separator: "，")) + "，查看传感器详情")
+    }
+
     private func summaryTitle(_ title: String) -> some View {
         HStack(spacing: 5) {
             Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -247,9 +280,9 @@ struct MonitorPanel: View {
                     Spacer()
                     Text(store.snapshot.reading(primary)?.title ?? "等待采样").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                Sparkline(points: store.history.points(for: primary, since: now - window), now: now, window: window,
+                HistoryDotChart(points: store.history.points(for: primary, since: now - window - 12), now: now, window: window,
                           color: color(primary), ceiling: store.snapshot.reading(primary)?.unit == "%" ? 100 : nil,
-                          bars: module == .network).frame(height: 100)
+                          compact: false).frame(height: 100)
                 HStack {
                     Text("\(Int(window / 3600)) 小时前")
                     Spacer()
