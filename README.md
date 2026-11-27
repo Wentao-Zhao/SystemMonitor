@@ -1,10 +1,10 @@
 # SystemMonitor
 
-独立编写的原生 macOS 菜单栏监控工具。近期目标是替代当前机器上 iStat Menus 的核心用途，当前交付为 0.1.1 开发预览。工程没有 fork、复制或改造开源监控应用。
+独立编写的原生 macOS 菜单栏监控工具。近期目标是替代当前机器上 iStat Menus 的核心用途，当前交付为 0.2.0 开发预览。工程没有 fork、复制或改造开源监控应用。
 
 ## 下载与安装
 
-**[下载 SystemMonitor 0.1.1 DMG](https://github.com/Wentao-Zhao/SystemMonitor/releases/download/v0.1.1/SystemMonitor-0.1.1.dmg)** · [版本说明与校验文件](https://github.com/Wentao-Zhao/SystemMonitor/releases/tag/v0.1.1)
+**[下载 SystemMonitor 0.2.0 DMG](https://github.com/Wentao-Zhao/SystemMonitor/releases/download/v0.2.0/SystemMonitor-0.2.0.dmg)** · [版本说明与校验文件](https://github.com/Wentao-Zhao/SystemMonitor/releases/tag/v0.2.0)
 
 当前安装包适用于 **Apple Silicon（M 系列芯片），macOS 14 及以上**。这是开发预览，尚未完成所有系统和机型验收；Intel Mac 暂无安装包。
 
@@ -17,7 +17,7 @@
 需要核对下载完整性时，将 DMG 和 Release 中的 `.sha256` 文件放在同一目录，运行：
 
 ```sh
-shasum -a 256 -c SystemMonitor-0.1.1.dmg.sha256
+shasum -a 256 -c SystemMonitor-0.2.0.dmg.sha256
 ```
 
 ## 当前功能
@@ -49,7 +49,7 @@ shasum -a 256 -c SystemMonitor-0.1.1.dmg.sha256
 
 ## 安装与使用
 
-构建产物在 `dist/SystemMonitor.app` 和 `dist/SystemMonitor-0.1.1.dmg`。打开 DMG，将 App 拖入 `/Applications` 后启动。
+构建产物在 `dist/SystemMonitor.app` 和 `dist/SystemMonitor-0.2.0.dmg`。打开 DMG，将 App 拖入 `/Applications` 后启动。
 
 使用 MenuBarFold 时，请从 `/Applications/SystemMonitor.app` 启动。它所用的系统收纳机制可能隐藏从开发目录运行的应用，即使未勾选收起 SystemMonitor；这是已经在本机复现的情况。若只有设置预览、菜单栏没有入口，先确认运行位置，安装到“应用程序”后退出开发目录中的进程并重新启动。
 
@@ -98,3 +98,31 @@ AppleSMC 与 IOReport 会受到命令执行沙盒限制。应在普通终端或�
 `MonitorCore` 管理模型、差分、历史和偏好；`SystemCollectors` 负责系统数据；`HardwareBridge` 隔离只读底层接口；`SystemMonitor` 负责 AppKit 菜单栏和 SwiftUI 界面。基础采集和硬件采集使用不同后台队列，主线程更新界面。
 
 温度和功耗接口不是稳定的公开应用 API，需要按 macOS 和芯片继续验证；错误不能降级成虚构的正常数据。完整规格及实现步骤位于 `docs/superpowers/`。
+
+
+## 手动检查更新（Sparkle）
+
+在应用菜单或菜单栏右键菜单选择「检查更新…」，可查看新版并确认下载安装、替换应用和重启。仅手动触发，不自动轮询、下载或上传系统信息。首次需手动安装一版带 Sparkle 的新包。
+
+更新框架固定为 Sparkle 2.10.1，原始许可随应用打包在 `Contents/Resources/Sparkle-LICENSE.txt`。应用保持现有最低 macOS 要求。
+
+### 维护与发布
+
+- 发布配置：`Resources/UpdateRelease.json`；公钥与更新源：`Resources/Info.plist`。
+- 私钥保存在本机登录钥匙串的独立账户。禁止将私钥导出至仓库或提交；备份钥匙串，丢失后旧用户可能无法升级。
+- 更新源是 GitHub Release 的 `releases/latest/download/appcast.xml`，清单和 DMG 都签名。每次 Release 必须同时发布 appcast.xml、DMG 与 SHA256SUMS；不能只上传新 DMG。
+- 正式对外分发可配置 Developer ID 签名和公证；本次仍使用本地临时签名，无需额外购买服务。
+
+准备本地更新包（构建、检查更新器配置、签名和公钥验证）：
+
+```bash
+zsh scripts/release-update.sh --prepare
+```
+
+发布前提升 `CFBundleShortVersionString` 和递增 `CFBundleVersion`，提交并推送代码及对应的 annotated `v版本` 标签，再执行：
+
+```bash
+zsh scripts/release-update.sh --publish
+```
+
+发布脚本先创建草稿并上传全部附件，再设为最新版；不会覆盖已有 Release。`zsh scripts/check-updater.sh --network` 可检查线上 feed；`python3 Tests/UpdateTests/test_appcast.py` 验证生成与失败处理（可选真实密钥测试使用 Python cryptography，生产签名校验使用系统 CryptoKit）。

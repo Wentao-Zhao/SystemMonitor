@@ -23,10 +23,16 @@ final class MenuBarController: NSObject {
         let mainMenu = NSMenu()
         let applicationItem = NSMenuItem()
         let applicationMenu = NSMenu(title: "SystemMonitor")
-        for (title, action, key) in [("系统概览", #selector(showOverview), "1"), ("设置…", #selector(showSettings), ","), ("退出 SystemMonitor", #selector(quit), "q")] {
+        for (title, action, key) in [("系统概览", #selector(showOverview), "1"), ("设置…", #selector(showSettings), ",")] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
             item.target = self; applicationMenu.addItem(item)
         }
+        applicationMenu.addItem(.separator())
+        applicationMenu.addItem(AppUpdater.shared.makeMenuItem())
+        applicationMenu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "退出 SystemMonitor", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        applicationMenu.addItem(quitItem)
         mainMenu.addItem(applicationItem); mainMenu.setSubmenu(applicationMenu, for: applicationItem)
         NSApp.mainMenu = mainMenu
         store.objectWillChange.sink { [weak self] in
@@ -114,7 +120,7 @@ final class MenuBarController: NSObject {
         if NSApp.currentEvent?.type == .rightMouseUp {
             popover.close()
             let menu = NSMenu()
-            for (title, action) in [("设置…", #selector(showSettings)), (store.paused ? "继续采集" : "暂停采集", #selector(togglePause)), ("退出 SystemMonitor", #selector(quit))] {
+            for (title, action) in [("设置…", #selector(showSettings)), (store.paused ? "继续采集" : "暂停采集", #selector(togglePause))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
             }
             let metrics = NSMenuItem(title: "菜单栏指标", action: nil, keyEquivalent: "")
@@ -136,6 +142,12 @@ final class MenuBarController: NSObject {
                 group.submenu = submenu; choices.addItem(group)
             }
             metrics.submenu = choices; menu.insertItem(metrics, at: 1)
+            menu.addItem(.separator())
+            menu.addItem(AppUpdater.shared.makeMenuItem())
+            menu.addItem(.separator())
+            let quitItem = NSMenuItem(title: "退出 SystemMonitor", action: #selector(quit), keyEquivalent: "")
+            quitItem.target = self
+            menu.addItem(quitItem)
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: sender)
             return
         }
